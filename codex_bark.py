@@ -21,10 +21,11 @@ from typing import Any, Dict, Optional, Tuple
 
 
 DEFAULT_BARK_SERVER = "https://api.day.app"
-DEFAULT_TITLE = "Codex task complete"
+DEFAULT_TITLE = "Complete"
 DEFAULT_GROUP = "Codex"
 MAX_BODY_CHARS = 900
-MAX_TASK_CHARS = 72
+DEFAULT_TASK_MAX_CHARS = 180
+DEFAULT_RESULT_MAX_CHARS = 260
 DEFAULT_HOOK_TIMEOUT = 15.0
 
 
@@ -195,28 +196,31 @@ def summarize_event(
     event: Dict[str, Any],
     state: Optional[Dict[str, Any]] = None,
     title_prefix: str = DEFAULT_TITLE,
+    task_max_chars: int = DEFAULT_TASK_MAX_CHARS,
+    result_max_chars: int = DEFAULT_RESULT_MAX_CHARS,
 ) -> Tuple[str, str]:
     state = state or {}
     cwd = event.get("cwd") or event.get("workspace") or ""
     cwd_name = Path(cwd).name if cwd else "unknown workspace"
 
-    task = extract_task(event, state)
-    task_title = _clean_text(task, limit=MAX_TASK_CHARS)
-    title = f"{title_prefix}: {task_title}" if title_prefix else task_title
+    title = title_prefix or DEFAULT_TITLE
 
     last_message = _clean_text(
         event.get("last_assistant_message")
         or event.get("last-assistant-message")
         or event.get("message")
         or "Codex finished the current task.",
-        limit=MAX_BODY_CHARS,
+        limit=max(1, result_max_chars),
     )
 
     duration = duration_from_event(event, state)
-    body_lines = [f"Project: {cwd_name}"]
-    if duration:
-        body_lines.append(f"Duration: {duration}")
-    body_lines.extend(["", f"Result: {last_message}"])
+    duration_suffix = f" ({duration})" if duration and duration != "0s" else ""
+    question = _clean_text(extract_task(event, state), limit=max(1, task_max_chars))
+    body_lines = [
+        f"Project: {cwd_name}{duration_suffix}",
+        f"Question: {question}",
+        f"Result: {last_message}",
+    ]
 
     return title, "\n".join(body_lines)
 
@@ -228,8 +232,16 @@ def build_bark_payload(
     group: str,
     sound: Optional[str],
     url: Optional[str],
+    task_max_chars: int = DEFAULT_TASK_MAX_CHARS,
+    result_max_chars: int = DEFAULT_RESULT_MAX_CHARS,
 ) -> Dict[str, Any]:
-    title, body = summarize_event(event, state=state, title_prefix=title_prefix)
+    title, body = summarize_event(
+        event,
+        state=state,
+        title_prefix=title_prefix,
+        task_max_chars=task_max_chars,
+        result_max_chars=result_max_chars,
+    )
     payload: Dict[str, Any] = {
         "title": title,
         "body": body,
@@ -391,6 +403,16 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
         type=float,
         default=float(os.getenv("CODEX_BARK_HOOK_TIMEOUT", str(DEFAULT_HOOK_TIMEOUT))),
     )
+    parser.add_argument(
+        "--task-max-chars",
+        type=int,
+        default=int(os.getenv("CODEX_BARK_TASK_MAX_CHARS", str(DEFAULT_TASK_MAX_CHARS))),
+    )
+    parser.add_argument(
+        "--result-max-chars",
+        type=int,
+        default=int(os.getenv("CODEX_BARK_RESULT_MAX_CHARS", str(DEFAULT_RESULT_MAX_CHARS))),
+    )
     return parser.parse_args(argv)
 
 
@@ -425,6 +447,8 @@ def main(argv: list[str]) -> int:
         group=args.group,
         sound=args.sound,
         url=args.url,
+        task_max_chars=args.task_max_chars,
+        result_max_chars=args.result_max_chars,
     )
 
     if args.dry_run:

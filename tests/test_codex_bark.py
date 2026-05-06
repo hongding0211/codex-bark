@@ -46,13 +46,53 @@ class CodexBarkTests(unittest.TestCase):
             sound=None,
             url=None,
         )
-        self.assertEqual(payload["title"], "Done: ship the Bark hook")
+        self.assertEqual(payload["title"], "Done")
         self.assertEqual(payload["group"], "Codex")
-        self.assertIn("Project: example", payload["body"])
-        self.assertIn("Duration: 2m 5s", payload["body"])
+        self.assertIn("Project: example (2m 5s)", payload["body"])
+        self.assertIn("Question: ship the Bark hook", payload["body"])
         self.assertIn("Result: done", payload["body"])
         self.assertNotIn("Model:", payload["body"])
         self.assertNotIn("Time:", payload["body"])
+        self.assertNotIn("\n\n", payload["body"])
+
+    def test_zero_second_duration_is_hidden(self):
+        payload = codex_bark.build_bark_payload(
+            {
+                "hook_event_name": "Stop",
+                "cwd": "/tmp/example",
+                "duration_seconds": 0,
+                "prompt": "small task",
+                "last_assistant_message": "done",
+            },
+            state={},
+            title_prefix="Complete",
+            group="Codex",
+            sound=None,
+            url=None,
+        )
+
+        self.assertIn("Project: example\n", payload["body"])
+        self.assertNotIn("(0s)", payload["body"])
+
+    def test_question_and_result_have_separate_limits(self):
+        payload = codex_bark.build_bark_payload(
+            {
+                "hook_event_name": "Stop",
+                "cwd": "/tmp/example",
+                "prompt": "q" * 20,
+                "last_assistant_message": "r" * 20,
+            },
+            state={},
+            title_prefix="Complete",
+            group="Codex",
+            sound=None,
+            url=None,
+            task_max_chars=8,
+            result_max_chars=10,
+        )
+
+        self.assertIn("Question: qqqqqqq...", payload["body"])
+        self.assertIn("Result: rrrrrrrrr...", payload["body"])
 
     def test_user_prompt_submit_records_turn_state(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -114,9 +154,11 @@ class CodexBarkTests(unittest.TestCase):
 
         self.assertTrue(changed)
         self.assertIn("BARK_DEVICE_KEY='device key'", content)
-        self.assertIn("BARK_TITLE='Codex task complete'", content)
+        self.assertIn("BARK_TITLE=Complete", content)
         self.assertIn("CODEX_BARK_STATE_DIR=", content)
         self.assertIn("CODEX_BARK_CONFIG=", content)
+        self.assertIn("CODEX_BARK_TASK_MAX_CHARS=180", content)
+        self.assertIn("CODEX_BARK_RESULT_MAX_CHARS=260", content)
 
     def test_register_device_token_returns_device_key(self):
         response = mock.Mock()

@@ -57,13 +57,15 @@ Environment variables read by the hook:
 
 - `BARK_DEVICE_KEY` or `BARK_KEY`: Bark device key
 - `BARK_SERVER`: Bark server, defaults to `https://api.day.app`
-- `BARK_TITLE`: notification title, defaults to `Codex task complete`
+- `BARK_TITLE`: notification title, defaults to `Complete`
 - `BARK_GROUP`: Bark notification group, defaults to `Codex`
 - `BARK_SOUND`: optional Bark sound
 - `BARK_URL`: optional URL opened when tapping the notification
 - `BARK_LOG_FILE`: optional local send log
 - `CODEX_BARK_STATE_DIR`: where `UserPromptSubmit` stores turn start metadata
 - `CODEX_BARK_CONFIG`: optional JSON config path for user-defined hook commands
+- `CODEX_BARK_TASK_MAX_CHARS`: max question length before `...`, defaults to `180`
+- `CODEX_BARK_RESULT_MAX_CHARS`: max result length before `...`, defaults to `260`
 
 The hook also accepts the older Codex `notify` JSON argument shape and sends notifications for `agent-turn-complete`.
 

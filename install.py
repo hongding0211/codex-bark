@@ -134,11 +134,13 @@ def write_env(env_path: Path, device_key: str, server: str, log_path: Path, stat
         [
             line("BARK_DEVICE_KEY", device_key),
             line("BARK_SERVER", server),
-            line("BARK_TITLE", "Codex task complete"),
+            line("BARK_TITLE", "Complete"),
             line("BARK_GROUP", "Codex"),
             line("BARK_LOG_FILE", str(log_path)),
             line("CODEX_BARK_STATE_DIR", str(state_dir)),
             line("CODEX_BARK_CONFIG", str(config_path)),
+            line("CODEX_BARK_TASK_MAX_CHARS", "180"),
+            line("CODEX_BARK_RESULT_MAX_CHARS", "260"),
             "",
         ]
     )
