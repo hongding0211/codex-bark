@@ -1,7 +1,6 @@
 # codex-bark
 
 Codex lifecycle hook that sends a Bark push notification when a Codex turn reaches the `Stop` event.
-It also listens to `UserPromptSubmit` so the final notification can name the task and show the turn duration.
 
 The hook uses Bark's public endpoint by default:
 
@@ -24,7 +23,7 @@ The installer:
 - registers `BARK_DEVICE_TOKEN` with Bark when `BARK_DEVICE_KEY` is not provided
 - writes `~/.codex/codex-bark.env` with the Bark device key and server URL
 - enables `[features].codex_hooks = true` in `~/.codex/config.toml`
-- adds `UserPromptSubmit` and `Stop` command hooks to `~/.codex/hooks.json`
+- adds a `Stop` command hook to `~/.codex/hooks.json`
 - creates timestamped backups before changing existing Codex config files
 
 The configured device key is stored in `~/.codex/codex-bark.env` with `0600` permissions.
@@ -40,7 +39,7 @@ BARK_DEVICE_KEY='your-bark-key' python3 install.py
 Run a dry run without sending a push:
 
 ```sh
-printf '{"hook_event_name":"Stop","cwd":"/tmp/demo","turn_id":"t1","duration_seconds":83,"prompt":"fix the build","last_assistant_message":"done"}' \
+printf '{"hook_event_name":"Stop","cwd":"/tmp/demo","turn_id":"t1","prompt":"fix the build","last_assistant_message":"done"}' \
   | python3 codex_bark.py --dry-run
 ```
 
@@ -62,7 +61,6 @@ Environment variables read by the hook:
 - `BARK_SOUND`: optional Bark sound
 - `BARK_URL`: optional URL opened when tapping the notification
 - `BARK_LOG_FILE`: optional local send log
-- `CODEX_BARK_STATE_DIR`: where `UserPromptSubmit` stores turn start metadata
 - `CODEX_BARK_CONFIG`: optional JSON config path for user-defined hook commands
 - `CODEX_BARK_TASK_MAX_CHARS`: max question length before `...`, defaults to `180`
 - `CODEX_BARK_RESULT_MAX_CHARS`: max result length before `...`, defaults to `260`
@@ -75,9 +73,6 @@ Create `~/.codex/codex-bark.json` to run your own commands around codex-bark:
 
 ```json
 {
-  "on_user_prompt": [
-    "logger 'codex prompt submitted'"
-  ],
   "before_notify": [
     "python3 ~/bin/codex_before_notify.py"
   ],

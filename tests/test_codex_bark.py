@@ -30,17 +30,16 @@ class CodexBarkTests(unittest.TestCase):
         self.assertFalse(codex_bark.should_notify({"hook_event_name": "PreToolUse"}))
         self.assertFalse(codex_bark.should_notify({"type": "approval-requested"}))
 
-    def test_build_payload_includes_task_duration_and_result(self):
+    def test_build_payload_includes_project_question_and_result(self):
         payload = codex_bark.build_bark_payload(
             {
                 "hook_event_name": "Stop",
                 "cwd": "/tmp/example",
                 "model": "gpt-test",
                 "turn_id": "turn-1",
-                "duration_seconds": 125,
+                "prompt": "ship the Bark hook",
                 "last_assistant_message": "done",
             },
-            state={"prompt": "ship the Bark hook"},
             title_prefix="Done",
             group="Codex",
             sound=None,
@@ -48,23 +47,24 @@ class CodexBarkTests(unittest.TestCase):
         )
         self.assertEqual(payload["title"], "Done")
         self.assertEqual(payload["group"], "Codex")
-        self.assertIn("Project: example (2m 5s)", payload["body"])
+        self.assertIn("Project: example", payload["body"])
         self.assertIn("Question: ship the Bark hook", payload["body"])
         self.assertIn("Result: done", payload["body"])
+        self.assertNotIn("Duration:", payload["body"])
+        self.assertNotIn("(2m 5s)", payload["body"])
         self.assertNotIn("Model:", payload["body"])
         self.assertNotIn("Time:", payload["body"])
         self.assertNotIn("\n\n", payload["body"])
 
-    def test_zero_second_duration_is_hidden(self):
+    def test_duration_is_never_shown(self):
         payload = codex_bark.build_bark_payload(
             {
                 "hook_event_name": "Stop",
                 "cwd": "/tmp/example",
-                "duration_seconds": 0,
+                "duration_seconds": 125,
                 "prompt": "small task",
                 "last_assistant_message": "done",
             },
-            state={},
             title_prefix="Complete",
             group="Codex",
             sound=None,
@@ -72,7 +72,8 @@ class CodexBarkTests(unittest.TestCase):
         )
 
         self.assertIn("Project: example\n", payload["body"])
-        self.assertNotIn("(0s)", payload["body"])
+        self.assertNotIn("Duration:", payload["body"])
+        self.assertNotIn("(2m", payload["body"])
 
     def test_question_and_result_have_separate_limits(self):
         payload = codex_bark.build_bark_payload(
@@ -82,7 +83,6 @@ class CodexBarkTests(unittest.TestCase):
                 "prompt": "q" * 20,
                 "last_assistant_message": "r" * 20,
             },
-            state={},
             title_prefix="Complete",
             group="Codex",
             sound=None,
@@ -93,21 +93,6 @@ class CodexBarkTests(unittest.TestCase):
 
         self.assertIn("Question: qqqqqqq...", payload["body"])
         self.assertIn("Result: rrrrrrrrr...", payload["body"])
-
-    def test_user_prompt_submit_records_turn_state(self):
-        with tempfile.TemporaryDirectory() as tmpdir:
-            event = {
-                "hook_event_name": "UserPromptSubmit",
-                "session_id": "s",
-                "turn_id": "t",
-                "cwd": "/tmp/example",
-                "prompt": "build this",
-            }
-            codex_bark.save_turn_state(event, tmpdir)
-            state = codex_bark.load_turn_state(event, tmpdir)
-
-        self.assertEqual(state["prompt"], "build this")
-        self.assertEqual(state["turn_id"], "t")
 
     def test_reads_task_from_transcript_when_state_is_missing(self):
         with tempfile.TemporaryDirectory() as tmpdir:
@@ -121,7 +106,7 @@ class CodexBarkTests(unittest.TestCase):
                 ),
                 encoding="utf-8",
             )
-            task = codex_bark.extract_task({"transcript_path": str(transcript)}, {})
+            task = codex_bark.extract_task({"transcript_path": str(transcript)})
 
         self.assertEqual(task, "latest task")
 
@@ -147,7 +132,6 @@ class CodexBarkTests(unittest.TestCase):
                 "device key",
                 "https://api.day.app",
                 Path(tmpdir) / "codex-bark.log",
-                Path(tmpdir) / "state",
                 Path(tmpdir) / "config.json",
             )
             content = env_path.read_text()
@@ -155,7 +139,7 @@ class CodexBarkTests(unittest.TestCase):
         self.assertTrue(changed)
         self.assertIn("BARK_DEVICE_KEY='device key'", content)
         self.assertIn("BARK_TITLE=Complete", content)
-        self.assertIn("CODEX_BARK_STATE_DIR=", content)
+        self.assertNotIn("CODEX_BARK_STATE_DIR=", content)
         self.assertIn("CODEX_BARK_CONFIG=", content)
         self.assertIn("CODEX_BARK_TASK_MAX_CHARS=180", content)
         self.assertIn("CODEX_BARK_RESULT_MAX_CHARS=260", content)
@@ -176,7 +160,7 @@ class CodexBarkTests(unittest.TestCase):
         self.assertEqual(request.data.decode(), "devicetoken=apns-token")
         self.assertEqual(key, "registered-key")
 
-    def test_installer_writes_user_prompt_and_stop_hooks(self):
+    def test_installer_writes_stop_hook_only(self):
         with tempfile.TemporaryDirectory() as tmpdir:
             hooks_path = Path(tmpdir) / "hooks.json"
             env_path = Path(tmpdir) / "env"
@@ -184,9 +168,38 @@ class CodexBarkTests(unittest.TestCase):
             data = json.loads(hooks_path.read_text())
 
         self.assertTrue(changed)
-        self.assertIn("UserPromptSubmit", data["hooks"])
         self.assertIn("Stop", data["hooks"])
-        self.assertIn("codex_bark.py", data["hooks"]["UserPromptSubmit"][0]["hooks"][0]["command"])
+        self.assertNotIn("UserPromptSubmit", data["hooks"])
+        self.assertIn("codex_bark.py", data["hooks"]["Stop"][0]["hooks"][0]["command"])
+
+    def test_installer_removes_older_user_prompt_hook(self):
+        with tempfile.TemporaryDirectory() as tmpdir:
+            hooks_path = Path(tmpdir) / "hooks.json"
+            hooks_path.write_text(
+                json.dumps(
+                    {
+                        "hooks": {
+                            "UserPromptSubmit": [
+                                {
+                                    "hooks": [
+                                        {
+                                            "type": "command",
+                                            "command": f"python3 {install.HOOK_SCRIPT}",
+                                        }
+                                    ]
+                                }
+                            ]
+                        }
+                    }
+                ),
+                encoding="utf-8",
+            )
+
+            install.install_codex_bark_hooks(hooks_path, Path(tmpdir) / "env")
+            data = json.loads(hooks_path.read_text())
+
+        self.assertNotIn("UserPromptSubmit", data["hooks"])
+        self.assertIn("Stop", data["hooks"])
 
     def test_installer_reads_existing_device_key(self):
         with tempfile.TemporaryDirectory() as tmpdir:

@@ -4,14 +4,12 @@
 from __future__ import annotations
 
 import argparse
-import hashlib
 import json
 import os
 import shlex
 import subprocess
 import sys
 import textwrap
-import time
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -76,58 +74,6 @@ def _clean_text(value: Any, limit: int = MAX_BODY_CHARS) -> str:
     return value
 
 
-def state_key(event: Dict[str, Any]) -> str:
-    session_id = str(event.get("session_id") or "")
-    turn_id = str(event.get("turn_id") or event.get("turn-id") or "")
-    transcript_path = str(event.get("transcript_path") or "")
-    raw = "\0".join([session_id, turn_id, transcript_path])
-    return hashlib.sha256(raw.encode("utf-8")).hexdigest()
-
-
-def state_path(state_dir: str, event: Dict[str, Any]) -> Path:
-    return Path(state_dir).expanduser() / f"{state_key(event)}.json"
-
-
-def save_turn_state(event: Dict[str, Any], state_dir: str) -> None:
-    if not state_dir:
-        return
-    prompt = _clean_text(event.get("prompt"), limit=MAX_BODY_CHARS)
-    path = state_path(state_dir, event)
-    try:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(
-            json.dumps(
-                {
-                    "started_at": time.time(),
-                    "prompt": prompt,
-                    "cwd": event.get("cwd"),
-                    "session_id": event.get("session_id"),
-                    "turn_id": event.get("turn_id") or event.get("turn-id"),
-                    "transcript_path": event.get("transcript_path"),
-                },
-                ensure_ascii=False,
-                indent=2,
-            )
-            + "\n",
-            encoding="utf-8",
-        )
-    except OSError:
-        return
-
-
-def load_turn_state(event: Dict[str, Any], state_dir: str) -> Dict[str, Any]:
-    if not state_dir:
-        return {}
-    path = state_path(state_dir, event)
-    if not path.exists():
-        return {}
-    try:
-        value = json.loads(path.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
 def read_last_user_prompt(transcript_path: Optional[str]) -> str:
     if not transcript_path:
         return ""
@@ -153,13 +99,12 @@ def read_last_user_prompt(transcript_path: Optional[str]) -> str:
     return last_prompt
 
 
-def extract_task(event: Dict[str, Any], state: Dict[str, Any]) -> str:
+def extract_task(event: Dict[str, Any]) -> str:
     candidates = [
         event.get("prompt"),
         event.get("user_prompt"),
         event.get("task"),
-        state.get("prompt"),
-        read_last_user_prompt(event.get("transcript_path") or state.get("transcript_path")),
+        read_last_user_prompt(event.get("transcript_path")),
     ]
     for candidate in candidates:
         text = _clean_text(candidate, limit=MAX_BODY_CHARS)
@@ -168,38 +113,12 @@ def extract_task(event: Dict[str, Any], state: Dict[str, Any]) -> str:
     return "Codex task"
 
 
-def format_duration(seconds: Optional[float]) -> str:
-    if seconds is None or seconds < 0:
-        return ""
-    rounded = int(round(seconds))
-    minutes, secs = divmod(rounded, 60)
-    hours, minutes = divmod(minutes, 60)
-    if hours:
-        return f"{hours}h {minutes}m {secs}s"
-    if minutes:
-        return f"{minutes}m {secs}s"
-    return f"{secs}s"
-
-
-def duration_from_event(event: Dict[str, Any], state: Dict[str, Any]) -> str:
-    explicit = event.get("duration_seconds") or event.get("elapsed_seconds")
-    if isinstance(explicit, (int, float)):
-        return format_duration(float(explicit))
-
-    started_at = state.get("started_at")
-    if isinstance(started_at, (int, float)):
-        return format_duration(time.time() - float(started_at))
-    return ""
-
-
 def summarize_event(
     event: Dict[str, Any],
-    state: Optional[Dict[str, Any]] = None,
     title_prefix: str = DEFAULT_TITLE,
     task_max_chars: int = DEFAULT_TASK_MAX_CHARS,
     result_max_chars: int = DEFAULT_RESULT_MAX_CHARS,
 ) -> Tuple[str, str]:
-    state = state or {}
     cwd = event.get("cwd") or event.get("workspace") or ""
     cwd_name = Path(cwd).name if cwd else "unknown workspace"
 
@@ -213,11 +132,9 @@ def summarize_event(
         limit=max(1, result_max_chars),
     )
 
-    duration = duration_from_event(event, state)
-    duration_suffix = f" ({duration})" if duration and duration != "0s" else ""
-    question = _clean_text(extract_task(event, state), limit=max(1, task_max_chars))
+    question = _clean_text(extract_task(event), limit=max(1, task_max_chars))
     body_lines = [
-        f"Project: {cwd_name}{duration_suffix}",
+        f"Project: {cwd_name}",
         f"Question: {question}",
         f"Result: {last_message}",
     ]
@@ -227,7 +144,6 @@ def summarize_event(
 
 def build_bark_payload(
     event: Dict[str, Any],
-    state: Optional[Dict[str, Any]],
     title_prefix: str,
     group: str,
     sound: Optional[str],
@@ -237,7 +153,6 @@ def build_bark_payload(
 ) -> Dict[str, Any]:
     title, body = summarize_event(
         event,
-        state=state,
         title_prefix=title_prefix,
         task_max_chars=task_max_chars,
         result_max_chars=result_max_chars,
@@ -391,10 +306,6 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
     parser.add_argument("--timeout", type=float, default=float(os.getenv("BARK_TIMEOUT", "10")))
     parser.add_argument("--log-file", default=os.getenv("BARK_LOG_FILE"))
     parser.add_argument(
-        "--state-dir",
-        default=os.getenv("CODEX_BARK_STATE_DIR", str(Path.home() / ".codex" / "codex-bark-state")),
-    )
-    parser.add_argument(
         "--config",
         default=os.getenv("CODEX_BARK_CONFIG", str(Path.home() / ".codex" / "codex-bark.json")),
     )
@@ -429,20 +340,12 @@ def main(argv: list[str]) -> int:
 
     custom_config = load_custom_config(args.config)
 
-    if event.get("hook_event_name") == "UserPromptSubmit":
-        save_turn_state(event, args.state_dir)
-        run_custom_hooks(custom_config, "on_user_prompt", event, None, args.hook_timeout, args.log_file)
-        print(json.dumps(_hook_success_output()), flush=True)
-        return 0
-
     if not should_notify(event):
         print(json.dumps(_hook_success_output()), flush=True)
         return 0
 
-    state = load_turn_state(event, args.state_dir)
     payload = build_bark_payload(
         event=event,
-        state=state,
         title_prefix=args.title,
         group=args.group,
         sound=args.sound,
