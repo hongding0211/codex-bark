@@ -77,38 +77,46 @@ def load_hooks(path: Path) -> Dict[str, Any]:
     return data
 
 
-def install_stop_hook(hooks_path: Path, env_path: Path, log_path: Path) -> bool:
-    data = load_hooks(hooks_path)
-    stop_hooks = data.setdefault("hooks", {}).setdefault("Stop", [])
-    if not isinstance(stop_hooks, list):
-        raise ValueError("hooks.Stop must be an array")
-
-    command = (
+def build_command(env_path: Path) -> str:
+    return (
         "/bin/zsh -lc "
         + repr(
             f"set -a; [ -f {str(env_path)!r} ] && source {str(env_path)!r}; "
             f"/usr/bin/python3 {str(HOOK_SCRIPT)!r}"
         )
     )
+
+
+def install_event_hook(data: Dict[str, Any], event_name: str, env_path: Path, timeout: int) -> None:
+    event_hooks = data.setdefault("hooks", {}).setdefault(event_name, [])
+    if not isinstance(event_hooks, list):
+        raise ValueError(f"hooks.{event_name} must be an array")
+
     entry = {
         "hooks": [
             {
                 "type": "command",
-                "command": command,
-                "timeout": 20,
-                "statusMessage": "Sending Bark notification",
+                "command": build_command(env_path),
+                "timeout": timeout,
+                "statusMessage": "Running codex-bark",
             }
         ]
     }
 
     marker = str(HOOK_SCRIPT)
     filtered = []
-    for group in stop_hooks:
+    for group in event_hooks:
         group_text = json.dumps(group, ensure_ascii=False)
         if marker not in group_text:
             filtered.append(group)
     filtered.append(entry)
-    data["hooks"]["Stop"] = filtered
+    data["hooks"][event_name] = filtered
+
+
+def install_codex_bark_hooks(hooks_path: Path, env_path: Path) -> bool:
+    data = load_hooks(hooks_path)
+    install_event_hook(data, "UserPromptSubmit", env_path, timeout=10)
+    install_event_hook(data, "Stop", env_path, timeout=20)
 
     new_text = json.dumps(data, ensure_ascii=False, indent=2) + "\n"
     old_text = hooks_path.read_text(encoding="utf-8") if hooks_path.exists() else ""
@@ -118,7 +126,7 @@ def install_stop_hook(hooks_path: Path, env_path: Path, log_path: Path) -> bool:
     return True
 
 
-def write_env(env_path: Path, device_key: str, server: str, log_path: Path) -> bool:
+def write_env(env_path: Path, device_key: str, server: str, log_path: Path, state_dir: Path, config_path: Path) -> bool:
     def line(name: str, value: str) -> str:
         return f"{name}={shlex.quote(str(value))}"
 
@@ -129,6 +137,8 @@ def write_env(env_path: Path, device_key: str, server: str, log_path: Path) -> b
             line("BARK_TITLE", "Codex task complete"),
             line("BARK_GROUP", "Codex"),
             line("BARK_LOG_FILE", str(log_path)),
+            line("CODEX_BARK_STATE_DIR", str(state_dir)),
+            line("CODEX_BARK_CONFIG", str(config_path)),
             "",
         ]
     )
@@ -171,6 +181,26 @@ def register_device_token(server: str, device_token: str, requested_key: str = "
     return str(device_key)
 
 
+def read_existing_env_value(env_path: Path, name: str) -> str:
+    if not env_path.exists():
+        return ""
+    try:
+        lines = env_path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return ""
+    prefix = f"{name}="
+    for line in lines:
+        if not line.startswith(prefix):
+            continue
+        raw = line[len(prefix) :]
+        try:
+            parsed = shlex.split(raw)
+        except ValueError:
+            return raw
+        return parsed[0] if parsed else ""
+    return ""
+
+
 def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Install codex-bark as a Codex Stop lifecycle hook.")
     parser.add_argument("--codex-home", default=os.getenv("CODEX_HOME", str(Path.home() / ".codex")))
@@ -189,19 +219,21 @@ def main() -> int:
     hooks_path = codex_home / "hooks.json"
     env_path = codex_home / "codex-bark.env"
     log_path = codex_home / "codex-bark.log"
+    state_dir = codex_home / "codex-bark-state"
+    bark_config_path = codex_home / "codex-bark.json"
 
     backup(config_path)
     backup(hooks_path)
 
-    device_key = args.device_key
+    device_key = args.device_key or read_existing_env_value(env_path, "BARK_DEVICE_KEY")
     if not device_key:
         if not args.device_token:
             raise SystemExit("Provide --device-key or --device-token, or set BARK_DEVICE_KEY/BARK_DEVICE_TOKEN.")
         device_key = register_device_token(args.server, args.device_token)
 
-    env_changed = write_env(env_path, device_key, args.server, log_path)
+    env_changed = write_env(env_path, device_key, args.server, log_path, state_dir, bark_config_path)
     config_changed = ensure_codex_hooks_feature(config_path)
-    hooks_changed = install_stop_hook(hooks_path, env_path, log_path)
+    hooks_changed = install_codex_bark_hooks(hooks_path, env_path)
 
     print(f"Codex home: {codex_home}")
     print(f"Env file: {env_path} {'updated' if env_changed else 'unchanged'}")
